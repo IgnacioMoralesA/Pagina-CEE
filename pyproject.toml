@@ -1,0 +1,10 @@
+[project]
+name = "cee-conecta"
+version = "0.1.0"
+description = "Fabrica agentica SDD minima para construir CEE Conecta."
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
