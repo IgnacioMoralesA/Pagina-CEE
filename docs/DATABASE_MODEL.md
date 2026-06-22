@@ -272,3 +272,43 @@ El agente `agent.database_designer` debe:
 6. Crear documentación actualizada.
 7. Registrar decisiones en `docs/DECISIONS.md`.
 8. Dejar handoff para backend.
+
+---
+
+## 7. Avance SQL inicial
+
+**Fecha:** 2026-06-21
+**Agente:** `agent.database_designer`
+
+Artefactos creados:
+
+- `app/database/schema.sql`
+- `app/database/seed.sql`
+
+### Checklist solicitada
+
+- [x] Tablas principales creadas
+- [x] Claves primarias definidas
+- [x] Claves foraneas definidas
+- [x] Constraints CHECK
+- [x] Indices importantes
+- [x] Seed de roles iniciales
+- [x] Estados definidos para noticias, eventos, solicitudes, recursos y votaciones
+- [x] Decisiones registradas en DECISIONS.md
+- [x] Handoff hacia backend_developer
+
+### Criterios aplicados
+
+- Las claves primarias usan `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`.
+- Los estados principales se definen con tipos ENUM de PostgreSQL.
+- Las tablas de negocio incluyen `created_at`, `updated_at` y `deleted_at` cuando aplica eliminacion logica.
+- Las reglas de integridad iniciales se cubren con claves unicas, claves foraneas, `CHECK` e indices parciales donde corresponde.
+- El seed inicial incluye roles, permisos base y catalogos minimos para iniciar el MVP.
+
+### Estados definidos
+
+- Noticias y comunicados: `DRAFT`, `PUBLISHED`, `ARCHIVED`.
+- Eventos: `PLANNED`, `PUBLISHED`, `FINISHED`, `CANCELLED`.
+- Solicitudes: `SUBMITTED`, `IN_REVIEW`, `OBSERVED`, `APPROVED`, `REJECTED`, `CLOSED`.
+- Recursos: `AVAILABLE`, `LOANED`, `DAMAGED`, `LOST`, `RETIRED`.
+- Votaciones: `DRAFT`, `OPEN`, `CLOSED`, `CANCELLED`.
