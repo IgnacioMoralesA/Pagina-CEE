@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     google_client_id: str | None = None
     institutional_email_domain: str | None = None
     http_timeout_seconds: float = 5.0
+    file_storage_path: str = ".cee-storage/files"
+    max_upload_size_bytes: int = 10 * 1024 * 1024
 
     @property
     def is_development(self) -> bool:

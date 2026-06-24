@@ -421,3 +421,261 @@ QA y frontend deben tratar `content.publish` como capacidad administrativa de
 contenido para el MVP. Si mas adelante se requieren permisos granulares por
 modulo o accion, `agent.database_designer` debera ampliar el seed/modelo y
 backend debera ajustar dependencias y contrato API.
+
+---
+
+## DEC-012 - Publicacion, cancelacion e inscripciones de eventos
+
+**Fecha:** 2026-06-22  
+**Agente:** agent.backend_developer  
+**Estado:** aprobada
+
+### Contexto
+
+El modulo de eventos requiere lecturas publicas, administracion de estados,
+inscripciones de usuarios y registro de asistencia. El modelo vigente define
+`events.manage` para administracion, `events.register` como capacidad de
+inscripcion en el seed, estados `PLANNED`, `PUBLISHED`, `FINISHED`,
+`CANCELLED`, y no incluye una columna para motivo de cancelacion.
+
+### Decision
+
+El backend usara `events.manage` como permiso administrativo para crear,
+actualizar, publicar, cancelar, finalizar eventos y registrar asistencia.
+
+Las lecturas publicas de `GET /api/v1/events` retornan por defecto eventos
+`PUBLISHED` proximos (`starts_at >= now()`). Consultar estados no publicos
+mediante filtro o detalle requiere permiso vigente `events.manage`.
+
+`POST /api/v1/events/{event_id}/register` requiere usuario autenticado y valida
+evento `PUBLISHED`, no duplicidad y capacidad disponible. No exige un permiso
+administrativo.
+
+`POST /api/v1/events/{event_id}/cancel` acepta `reason` opcional y, como el
+modelo no tiene columna para motivo, lo registra en metadata de auditoria
+administrativa sin cambiar el modelo de datos.
+
+### Justificacion
+
+La decision respeta el seed y el modelo existentes. Mantiene eventos no
+publicados fuera de lecturas publicas y conserva trazabilidad de cancelaciones
+sin requerir migracion de base de datos.
+
+### Impacto
+
+QA debe validar estados publicos/no publicos, capacidad, duplicidad de
+inscripciones, asistencia solo para usuarios inscritos y auditoria administrativa.
+Frontend debe mostrar acciones administrativas de eventos solo con
+`events.manage`.
+
+---
+
+## DEC-013 - Flujo inicial de solicitudes estudiantiles
+
+**Fecha:** 2026-06-22  
+**Agente:** agent.backend_developer  
+**Estado:** aprobada
+
+### Contexto
+
+El modulo de solicitudes debe permitir que estudiantes creen y consulten sus
+propias solicitudes, mientras directiva/admin gestiona estados y campos
+administrativos. El seed vigente define `requests.create` y `requests.manage`.
+El modelo incluye historial de estado, comentarios, asignacion, resolucion y
+fechas de resolucion/cierre.
+
+### Decision
+
+El backend usara:
+
+- `requests.create` para `POST /api/v1/requests`.
+- `requests.manage` para vista global, filtros administrativos, asignar,
+  observar, aprobar, rechazar y cerrar solicitudes.
+- `require_auth()` para lectura propia, edicion propia permitida y comentarios
+  no internos.
+
+El solicitante puede editar solo solicitudes propias en `SUBMITTED` u
+`OBSERVED`, y no puede modificar campos administrativos. En este avance,
+`POST /api/v1/requests/{request_id}/close` queda como cierre administrativo con
+`requests.manage`; si se decide permitir cierre por solicitante, debe
+formalizarse en una nueva decision.
+
+Toda transicion de estado crea registro en `request_status_history`. Las
+acciones administrativas mutantes registran auditoria con `entity_type =
+"requests"`.
+
+### Justificacion
+
+La separacion entre `requests.create` y `requests.manage` respeta el seed
+existente y evita conceder facultades administrativas a estudiantes. Mantener el
+cierre como administrativo reduce ambiguedades del flujo inicial del MVP.
+
+### Impacto
+
+QA debe validar permisos, visibilidad por propietario, historial y auditoria.
+Frontend debe mostrar acciones administrativas de solicitudes solo con
+`requests.manage`. Los adjuntos de solicitudes quedan definidos posteriormente
+en `DEC-014`.
+
+---
+
+## DEC-014 - Politica inicial de documentos, archivos y adjuntos
+
+**Fecha:** 2026-06-22  
+**Agente:** agent.backend_developer  
+**Estado:** aprobada
+
+### Contexto
+
+El modulo de documentos/archivos debe desbloquear documentos publicos,
+documentos internos y adjuntos de solicitudes sin cambiar el modelo de datos.
+El esquema vigente contiene `documents`, `document_versions`,
+`document_categories` y `request_attachments`. `document_versions` y
+`request_attachments` almacenan `file_url`, pero no existe columna dedicada para
+SHA-256 en adjuntos de solicitudes ni almacenamiento externo configurado.
+
+El entorno actual no tiene `python-multipart` instalado; usar `UploadFile` /
+`Form` nativos de FastAPI haria fallar la importacion de la app.
+
+### Decision
+
+El backend implementa una politica local controlada:
+
+- tipos permitidos: PDF, PNG, JPG/JPEG, DOCX, XLSX y CSV;
+- tamano maximo: 10 MB por archivo, configurable con
+  `CEE_MAX_UPLOAD_SIZE_BYTES`;
+- ruta base configurable con `CEE_FILE_STORAGE_PATH`;
+- nombre publico sanitizado;
+- clave interna UUID guardada en `file_url`;
+- hash SHA-256 calculado para cada subida;
+- metadatos locales sidecar JSON junto al archivo para conservar SHA-256 sin
+  modificar el modelo;
+- resolucion de descargas solo desde la clave interna, bloqueando path
+  traversal;
+- documentos publicos visibles solo si `status = PUBLISHED` y
+  `visibility = PUBLIC`;
+- documentos no publicos, borradores y archivados requieren
+  `documents.manage`;
+- adjuntos de solicitudes quedan siempre bajo almacenamiento privado y solo son
+  accesibles por el solicitante o por usuarios con `requests.manage`;
+- `DELETE /api/v1/documents/{id}` marca `status = ARCHIVED` y `deleted_at`, sin
+  borrar fisicamente el archivo.
+
+Para evitar agregar una dependencia no instalada en esta etapa, el backend usa
+un parser multipart local basado en la libreria estandar `email`, limitado a un
+archivo por request y campos simples del contrato.
+
+### Justificacion
+
+La decision cumple los controles de seguridad requeridos sin cambiar tablas ni
+romper el entorno de pruebas actual. Guardar una clave interna en `file_url`
+mantiene compatibilidad con el modelo existente y evita exponer rutas fisicas al
+cliente.
+
+### Impacto
+
+QA debe validar MIME, tamano, nombre seguro, hash, visibilidad, autorizacion de
+descargas, auditoria y envelope de errores.
+
+Seguridad debe revalidar el parser multipart local, la resolucion de rutas, la
+politica de MIME y que `file_url` no se exponga.
+
+Frontend debe consumir los endpoints documentados como `multipart/form-data` y
+usar las URLs publicas de descarga, no rutas internas.
+
+`agent.database_designer` debe evaluar en una fase posterior si conviene agregar
+columnas persistentes para `sha256`, `storage_key`, `deleted_at` en
+`request_attachments` o una tabla comun de archivos.
+
+---
+
+## DEC-015 - Validacion de contenido y lectura multipart acotada
+
+**Fecha:** 2026-06-24
+**Agente:** agent.security_reviewer
+**Estado:** aprobada
+
+### Contexto
+
+La revision de seguridad detecto que la validacion inicial confiaba en extension
+y MIME declarado, y que el parser podia leer el cuerpo completo antes de
+confirmar su tamano cuando faltaba o era falsa la cabecera `Content-Length`.
+
+### Decision
+
+- Leer el request multipart por stream y abortar al superar el tamano maximo
+  mas el margen de estructura multipart.
+- Mantener la validacion final del contenido del archivo contra el limite de
+  `CEE_MAX_UPLOAD_SIZE_BYTES`.
+- Exigir firma basica para PDF, PNG y JPEG.
+- Exigir un ZIP OOXML valido con estructura esperada para DOCX y XLSX.
+- Exigir CSV UTF-8 sin bytes NUL.
+- Mantener el parser local solo como solucion acotada del MVP; reemplazarlo por
+  una implementacion multipart mantenida cuando se incorpore la dependencia.
+
+### Justificacion
+
+La medida cierra la lectura no acotada y el bypass trivial mediante ejecutables
+renombrados sin cambiar el contrato ni el modelo de datos.
+
+### Impacto
+
+QA debe incluir archivos con MIME/extensiones inconsistentes, firmas invalidas,
+archivos vacios y requests sin `Content-Length`. La validacion de firma no
+sustituye escaneo antimalware ni prevencion de CSV injection, que quedan como
+hardening previo a produccion.
+
+---
+
+## DEC-016 - Visibilidad, estados y comprobantes de finanzas basicas
+
+**Fecha:** 2026-06-24
+**Agente:** agent.backend_developer
+**Estado:** aprobada
+
+### Contexto
+
+El modelo financiero vigente no contiene una columna explicita de visibilidad.
+Ingresos y gastos comparten estados `PENDING`, `APPROVED`, `REJECTED` y `VOID`.
+El contrato solicitado define aprobacion de gastos, pero no una accion separada
+para aprobar ingresos. Ademas, `expense_records.receipt_url` es obligatorio y
+no tiene clave foranea hacia la tabla general `documents`.
+
+### Decision
+
+- Todos los endpoints financieros se agrupan bajo `/api/v1/finances`.
+- Presupuestos `ACTIVE` y `CLOSED` son publicos; los demas requieren
+  `finances.manage`.
+- Ingresos y gastos `APPROVED` son publicos.
+- Los ingresos creados por `finances.manage` quedan `APPROVED` inmediatamente.
+- Los gastos se crean `PENDING`, solo son editables en ese estado y requieren
+  aprobacion explicita antes de ser publicos.
+- El resumen publico considera solo registros `APPROVED`.
+- El resumen operativo para `finances.manage` considera `PENDING` y
+  `APPROVED`, excluyendo `REJECTED` y `VOID`.
+- Un gasto recibe `receipt_document_id`; el backend valida un documento
+  existente, no archivado y con version, y persiste la ruta canonica
+  `/api/v1/documents/{document_id}/download` en `receipt_url`.
+- La descarga del comprobante conserva las reglas de autorizacion del modulo
+  de documentos.
+- Los montos se procesan con `Decimal` para evitar errores de punto flotante.
+
+### Justificacion
+
+La visibilidad por estado aprovecha el modelo existente sin agregar columnas.
+La aprobacion inmediata de ingresos mantiene un flujo utilizable, ya que el
+seed solo define `finances.manage` y no existe aprobacion separada de ingresos.
+La referencia mediante `document_id` evita aceptar URLs arbitrarias y reutiliza
+la descarga autorizada del modulo documental.
+
+### Impacto
+
+QA debe validar visibilidad, montos, referencias, transiciones, auditoria y
+calculos decimales.
+
+Frontend debe usar las rutas `/api/v1/finances`, tratar los montos como
+decimales y enviar `receipt_document_id` para comprobantes.
+
+Si se requiere visibilidad configurable por registro o una clave foranea
+directa entre gastos y documentos, debe coordinarse un cambio de modelo con
+`agent.database_designer`.

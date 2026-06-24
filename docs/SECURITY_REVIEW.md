@@ -301,3 +301,113 @@ No debe continuar con:
 - cualquier endpoint que confie en roles/permisos de JWT sin verificacion vigente.
 - acciones administrativas sin registro en `audit_events`.
 - endpoints de archivos sin controles de tipo, tamano, nombre seguro y descarga autorizada.
+
+---
+
+# Revision especifica de documentos, archivos y adjuntos
+
+**Fecha:** 2026-06-24
+**Agente:** agent.security_reviewer
+**Fase:** security_review_documents_files
+**Resultado:** apto con observaciones para QA funcional
+
+## Resumen
+
+Se revisaron los endpoints de documentos y adjuntos, el parser multipart local,
+el almacenamiento, las descargas, los permisos, la auditoria y la eliminacion
+logica. No quedan riesgos criticos conocidos despues de las correcciones
+localizadas de esta revision.
+
+La autorizacion privada se valida antes de resolver el archivo: documentos no
+publicos requieren `documents.manage`, y adjuntos requieren ser dueno de la
+solicitud o tener `requests.manage`. Las respuestas no exponen `file_url`,
+`storage_key` ni rutas fisicas.
+
+## Controles verificados
+
+| Control | Resultado |
+| --- | --- |
+| Parser multipart | Lectura por stream acotada aun sin `Content-Length`; un archivo por request. |
+| Tamano maximo | Validacion de cabecera, cuerpo multipart y contenido final; respuesta `413`. |
+| MIME y extension | Lista permitida y consistencia MIME-extension; respuesta `415`. |
+| Firma/contenido | Magic bytes para PDF, PNG y JPEG; estructura OOXML para DOCX/XLSX; CSV UTF-8 sin NUL. |
+| Archivo vacio | Rechazado. |
+| Nombre publico | Sanitizado antes de persistir y usar en descarga. |
+| Nombre interno | UUID aleatorio; nombres duplicados no sobrescriben archivos. |
+| Escritura y lectura | Resolucion bajo la ruta base y bloqueo de path traversal/symlinks externos. |
+| Datos sensibles | No se exponen rutas internas ni claves de almacenamiento. |
+| Publico/privado | Separacion logica por bucket y autorizacion de aplicacion. |
+| Documentos privados | Requieren `documents.manage`. |
+| Adjuntos | Solo dueno de solicitud o `requests.manage`; no propietario recibe `404`. |
+| Auditoria | Mutaciones administrativas de documentos y adjuntos quedan auditadas. |
+| Eliminacion | Logica; no ejecuta borrado fisico inseguro. |
+| Content-Disposition | Usa nombre sanitizado mediante `FileResponse`. |
+
+## Correcciones aplicadas
+
+1. El parser multipart dejo de usar una lectura no acotada de todo el request y
+   ahora interrumpe el stream al superar el limite permitido.
+2. Se agrego validacion basica de firma o estructura para impedir que un
+   ejecutable renombrado sea aceptado solo por extension y MIME declarado.
+3. Se corrigio el archivado en el repositorio de base de datos para recuperar el
+   documento con `include_deleted=True` despues de marcar `deleted_at`.
+4. Se agregaron pruebas para ejecutables renombrados y streams sin
+   `Content-Length`.
+
+## Riesgos criticos
+
+No se identifican riesgos criticos abiertos en el modulo revisado.
+
+## Riesgos medios
+
+### SR-FILE-MED-001 - Parser multipart local
+
+El parser basado en `email` tiene lectura acotada, pero sigue siendo una
+implementacion local con menor madurez que una libreria multipart mantenida. El
+limite tambien debe existir en proxy y servidor para mitigar concurrencia y
+consumo de conexiones.
+
+### SR-FILE-MED-002 - Archivos maliciosos con formato valido
+
+Las firmas basicas evitan archivos ejecutables simplemente renombrados, pero no
+detectan malware, exploits, enlaces externos, contenido activo o documentos
+ofimaticos maliciosos dentro de formatos validos. Se requiere cuarentena y
+escaneo antimalware antes de produccion.
+
+### SR-FILE-MED-003 - CSV injection
+
+Los CSV se validan como texto UTF-8 sin bytes NUL, pero no se rechazan ni
+neutralizan celdas que comiencen con `=`, `+`, `-`, `@`, tabulacion o retorno.
+Abrir un archivo no confiable en una hoja de calculo puede ejecutar formulas o
+enlaces peligrosos.
+
+### SR-FILE-MED-004 - Configuracion y aislamiento del almacenamiento
+
+La separacion publica/privada es logica y depende de que
+`CEE_FILE_STORAGE_PATH` no sea servido directamente por el proxy o servidor
+web. Produccion debe validar una ruta privada, escribible, fuera del document
+root, y un `CEE_MAX_UPLOAD_SIZE_BYTES` positivo y razonable.
+
+### SR-FILE-MED-005 - Integridad y ciclo de vida
+
+El SHA-256 queda en sidecar local y no se verifica nuevamente al descargar. Un
+fallo abrupto entre escritura y persistencia puede dejar archivos huerfanos.
+La persistencia estructurada de hash, clave y eliminacion de adjuntos sigue
+dependiendo de `Handoff 026`.
+
+## Riesgos menores
+
+- Los nombres publicos duplicados son permitidos; no causan sobrescritura por
+  el UUID interno, pero pueden generar ambiguedad operacional.
+- Filas legadas creadas fuera del flujo actual podrian contener nombres no
+  sanitizados; conviene normalizarlos al migrar datos.
+- La eliminacion logica conserva archivos indefinidamente hasta que exista una
+  politica de retencion y purga segura.
+
+## Decision de avance
+
+**El modulo puede pasar a QA funcional.** No quedan hallazgos criticos
+bloqueantes y las correcciones tienen cobertura automatizada. Los riesgos
+medios anteriores no bloquean QA, pero `SR-FILE-MED-002`,
+`SR-FILE-MED-003` y `SR-FILE-MED-004` deben tratarse antes de habilitar cargas
+no confiables en produccion.
